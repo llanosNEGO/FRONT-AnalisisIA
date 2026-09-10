@@ -3,6 +3,7 @@ import MainLayout from './layouts/MainLayout'
 import Dashboard from './pages/Dashboard'
 import ConfigPage from './pages/Config'
 import Login from './pages/Login'
+import './App.css'
 
 function App() {
   return (
