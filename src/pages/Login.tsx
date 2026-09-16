@@ -1,8 +1,23 @@
+import { useState } from 'react'
 import { GoogleLogin } from '@react-oauth/google'
 import { useNavigate } from 'react-router-dom'
+import { useAuth } from '../context/AuthContext'
 
 export default function Login() {
   const navigate = useNavigate()
+  const { signInWithGoogle } = useAuth()
+  const [error, setError] = useState<string | null>(null)
+
+  const handleSuccess = async (credential?: string) => {
+    if (!credential) return
+    try {
+      setError(null)
+      await signInWithGoogle(credential)
+      navigate('/dashboard', { replace: true })
+    } catch {
+      setError('No se pudo iniciar sesión. Verifica tu cuenta de Google e intenta de nuevo.')
+    }
+  }
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-950 relative overflow-hidden font-sans selection:bg-purple-500/30">
@@ -21,19 +36,18 @@ export default function Login() {
 
         <div className="flex justify-center my-8">
           <GoogleLogin
-            onSuccess={(credentialResponse) => {
-              console.log('Login Success', credentialResponse)
-              navigate('/dashboard')
-            }}
-            onError={() => {
-              console.log('Login Failed')
-            }}
+            onSuccess={({ credential }) => handleSuccess(credential)}
+            onError={() => setError('No se pudo iniciar sesión con Google. Intenta de nuevo.')}
             theme="filled_black"
             shape="pill"
             size="large"
             text="continue_with"
           />
         </div>
+
+        {error && (
+          <p className="text-center text-sm text-red-400 mt-4 px-4">{error}</p>
+        )}
 
         <div className="text-center mt-6">
           <p className="text-xs text-gray-500">

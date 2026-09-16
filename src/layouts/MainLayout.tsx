@@ -1,7 +1,8 @@
-import { Outlet, Link, useLocation } from 'react-router-dom'
+import { Outlet, Link, useLocation, useNavigate } from 'react-router-dom'
 import { Activity, BarChart3, CalendarDays, FileText, LayoutDashboard, LogOut, Settings, Users } from 'lucide-react'
 import { clsx } from 'clsx'
 import { twMerge } from 'tailwind-merge'
+import { useAuth } from '../context/AuthContext'
 
 function cn(...inputs: (string | undefined | null | false)[]) {
   return twMerge(clsx(inputs))
@@ -9,6 +10,8 @@ function cn(...inputs: (string | undefined | null | false)[]) {
 
 export default function MainLayout() {
   const location = useLocation()
+  const navigate = useNavigate()
+  const { signOut } = useAuth()
 
   const navItems = [
     { path: '/dashboard', icon: LayoutDashboard, label: 'Dashboard' },
@@ -41,7 +44,10 @@ export default function MainLayout() {
         </nav>
 
         <div className="system-status"><span className="status-dot" /><div><strong>Sistema operativo</strong><span>1,284 dispositivos conectados</span><span>Última actualización: hace 2 s</span></div></div>
-        <Link to="/login" className="logout-link"><LogOut size={16} />Salir</Link>
+        <button
+          className="logout-link"
+          onClick={() => { signOut(); navigate('/login') }}
+        ><LogOut size={16} />Salir</button>
       </aside>
 
       {/* Main Content */}
