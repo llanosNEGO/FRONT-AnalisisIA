@@ -1,9 +1,22 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Activity, AlertTriangle, ArrowUpRight, CalendarDays, Check, ChevronDown, MoreHorizontal, UserRound, Users } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Link } from 'react-router-dom'
+import {
+  Activity,
+  AlertTriangle,
+  ArrowUpRight,
+  Check,
+  ChevronDown,
+  MoreHorizontal,
+  Radio,
+  UserRound,
+  Users,
+} from 'lucide-react'
+import { useExamContext } from '../context/ExamContext'
+import { useLiveContext } from '../context/LiveContext'
 import { apiGetSummary } from '../lib/services/summary'
 import { apiGetStudents } from '../lib/services/students'
-import { apiGetExams } from '../lib/services/exams'
-import type { Capture, Exam, RiskLevel, Student, Summary } from '../lib/types'
+import { formatTime, relativeTime, RISK_CLASS } from '../lib/format'
+import type { Capture, RiskLevel, Student, Summary } from '../lib/types'
 
 const PLATFORM_COLORS: Record<string, string> = {
   ChatGPT: '#29c0ae',
@@ -15,31 +28,21 @@ const PLATFORM_COLORS: Record<string, string> = {
   Otros: '#f19a60',
 }
 
-function riskToBadge(value: string): RiskLevel {
-  const normalized = value.toLowerCase()
-  if (normalized.includes('alto')) return 'Alto'
-  if (normalized.includes('medio')) return 'Medio'
-  return 'Normal'
-}
+/** Cada cuánto se recalculan los agregados mientras llegan eventos en vivo. */
+const AGGREGATE_DEBOUNCE_MS = 4_000
+const FALLBACK_POLL_MS = 60_000
 
-function RiskBadge({ value }: { value: string }) {
-  const cls = value.toLowerCase().includes('alto')
-    ? 'alto'
-    : value.toLowerCase().includes('medio')
-      ? 'medio'
-      : 'normal'
-  return <span className={`risk-badge ${cls}`}><i />{value}</span>
+function RiskBadge({ value }: { value: RiskLevel }) {
+  return (
+    <span className={`risk-badge ${RISK_CLASS[value]?.split(' ')[0] ?? 'normal'}`}>
+      <i />{value}
+    </span>
+  )
 }
 
 function AiMark({ name }: { name: string }) {
   const symbol = name === 'ChatGPT' ? '◉' : name === 'Gemini' ? '✦' : name === 'Claude' ? '✹' : name === 'Copilot' ? '▦' : name === 'Perplexity' ? '∞' : '•'
   return <span className={`ai-mark ${name.toLowerCase()}`}>{symbol}</span>
-}
-
-function formatTime(iso?: string | null) {
-  if (!iso) return '—'
-  const date = new Date(iso)
-  return date.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 }
 
 function buildTrendPaths(trend: Summary['trend']) {
@@ -59,7 +62,7 @@ function buildTrendPaths(trend: Summary['trend']) {
 
 function TrendChart({ data }: { data: Summary['trend'] }) {
   const { line, area } = useMemo(() => buildTrendPaths(data), [data])
-  if (!data.length) return <div className="p-4 text-center text-[10px] text-[#7186b3]">Sin datos de uso en los últimos 3 horas</div>
+  if (!data.length) return <div className="p-4 text-center text-[10px] text-[#64748b]">Sin datos de uso en los últimos 3 horas</div>
   return <div className="trend-chart">
     <div className="chart-y"><span>200</span><span>150</span><span>100</span><span>50</span><span>0</span></div>
     <svg viewBox="0 0 620 190" preserveAspectRatio="none" aria-label="Uso de IA durante el examen">
@@ -72,10 +75,10 @@ function TrendChart({ data }: { data: Summary['trend'] }) {
 }
 
 function Stats({ summary }: { summary: Summary }) {
-  const { stats } = summary
+  const { stats, incidents } = summary
   return <section className="stat-grid">
-    <div className="stat-card"><div className="stat-icon blue"><Users /></div><div><span>Usuarios totales</span><strong>{stats.total_students.toLocaleString()}</strong><small>estudiantes conectados</small></div></div>
-    <div className="stat-card"><div className="stat-icon red"><AlertTriangle /></div><div><span>Usando IA ahora</span><strong>{stats.using_ai}</strong><small>últimos 10 min</small></div></div>
+    <div className="stat-card"><div className="stat-icon blue"><Users /></div><div><span>Estudiantes</span><strong>{stats.total_students.toLocaleString()}</strong><small>{stats.active_sessions} sesión(es) activa(s)</small></div></div>
+    <div className="stat-card"><div className="stat-icon red"><AlertTriangle /></div><div><span>Incidentes abiertos</span><strong>{incidents.open}</strong><small>{incidents.high_severity} de severidad alta</small></div></div>
     <div className="stat-card"><div className="stat-icon teal"><Check /></div><div><span>Sin actividad de IA</span><strong>{stats.no_ai_activity}</strong><small>del total</small></div></div>
     <div className="stat-card"><div className="stat-icon amber"><AlertTriangle /></div><div><span>Nivel de riesgo</span><strong>{stats.risk_pct}%</strong><small>usuarios con actividad</small></div></div>
   </section>
@@ -85,7 +88,7 @@ function UsageBreakdown({ platforms }: { platforms: Summary['platforms'] }) {
   const total = platforms.reduce((acc, p) => acc + p.count, 0)
   return <section className="panel ai-panel"><div className="panel-heading"><h2>IA utilizada</h2></div>
     {platforms.length === 0 ? (
-      <div className="p-4 text-center text-[10px] text-[#7186b3]">Sin capturas</div>
+      <div className="p-4 text-center text-[10px] text-[#64748b]">Sin capturas</div>
     ) : (
       <div className="donut-row"><div className="donut" style={{ background: buildDonut(platforms) }}><div><strong>{total}</strong><span>capturas</span></div></div>
         <div className="legend">
@@ -110,38 +113,44 @@ function buildDonut(platforms: Summary['platforms']) {
   return `conic-gradient(${stops.join(', ')})`
 }
 
-function RecentActivity({ captures }: { captures: Capture[] }) {
-  return <section className="panel recent-panel"><div className="panel-heading"><h2><Activity className="pink-icon" size={16} />Actividad reciente</h2><a href="#activity">Ver todos <ArrowUpRight size={12} /></a></div>
+function RecentActivity({ captures, live }: { captures: Capture[]; live: boolean }) {
+  return <section className="panel recent-panel"><div className="panel-heading"><h2><Activity className="pink-icon" size={16} />Actividad reciente</h2>
+    {live && <span className="live-tag"><Radio size={12} className="pulse" /> en vivo</span>}
+    <Link to="/sessions">Ver sesiones <ArrowUpRight size={12} /></Link></div>
     <div className="recent-list">
-      {captures.length === 0 && <div className="py-4 text-center text-[10px] text-[#7186b3]">Sin actividad reciente</div>}
+      {captures.length === 0 && <div className="py-4 text-center text-[10px] text-[#64748b]">Sin actividad reciente</div>}
       {captures.map((c) => (
         <div className="recent-row" key={c.id}>
-          <RiskBadge value={riskToBadge(c.student_name ? 'Medio' : 'Normal')} />
+          <AiMark name={c.platform} />
           <span>{c.student_name ?? `Dispositivo ${c.device_id?.slice(0, 3) ?? '?'}`}</span>
-          <span className="recent-ai"><AiMark name={c.platform} />{c.platform}</span>
-          <time>{formatTime(c.timestamp)}</time>
+          <span className="recent-ai">{c.platform}</span>
+          <time title={relativeTime(c.timestamp)}>{formatTime(c.timestamp)}</time>
         </div>
       ))}
     </div>
   </section>
 }
 
-function StudentTable({ students, onSelect, selected, examNameOf }: { students: Student[], onSelect: (s: Student) => void, selected: Student | null, examNameOf: (s: Student) => string | undefined }) {
-  return <section className="panel students-panel"><div className="panel-heading"><h2><Users className="blue-icon" size={16} />Detalle de estudiantes</h2></div>
+function StudentTable({ students, onSelect, selected, examName }: { students: Student[], onSelect: (s: Student) => void, selected: Student | null, examName?: string }) {
+  return <section className="panel students-panel"><div className="panel-heading"><h2><Users className="blue-icon" size={16} />Detalle de estudiantes</h2>
+    <Link to="/students">Ver todos <ArrowUpRight size={12} /></Link></div>
     <div className="student-table"><div className="table-head"><span>Estado</span><span>Usuario</span><span>Examen</span><span>IA detectada</span><span>Última actividad</span><span>Riesgo</span></div>
-      {students.length === 0 && <div className="py-4 text-center text-[10px] text-[#7186b3]">Sin estudiantes registrados</div>}
+      {students.length === 0 && <div className="py-4 text-center text-[10px] text-[#64748b]">Sin estudiantes registrados</div>}
       {students.map((s) => (
-        <div className={`table-row ${selected?.id === s.id ? 'selected' : ''}`} key={s.id} onClick={() => onSelect(s)} role="button" tabIndex={0}>
-          <RiskBadge value={s.risk} />
+        <div className={`table-row ${selected?.id === s.id ? 'selected' : ''}`} key={s.id} onClick={() => onSelect(s)} role="button" tabIndex={0}
+          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelect(s) } }}>
+          {s.open_incidents > 0
+            ? <span className="risk-badge alto"><i />{s.open_incidents} inc.</span>
+            : <RiskBadge value={s.risk} />}
           <span>{s.display_name}</span>
-          <span>{examNameOf(s) ?? '—'}</span>
+          <span>{examName ?? '—'}</span>
           <span className="recent-ai">
-            {((s.platforms?.length ? s.platforms : s.main_platform ? [{ name: s.main_platform, count: s.captures_count }] : [])).map((p) => (
+            {(s.platforms?.length ? s.platforms : []).map((p) => (
               <span key={p.name} className="ai-chip" title={`${p.name}: ${p.count}`}><AiMark name={p.name} /></span>
             ))}
-            {!s.main_platform && '—'}
+            {!s.platforms?.length && '—'}
           </span>
-          <span>{formatTime(s.last_activity)}</span>
+          <span title={relativeTime(s.last_activity)}>{formatTime(s.last_activity)}</span>
           <RiskBadge value={s.risk} />
         </div>
       ))}
@@ -149,8 +158,8 @@ function StudentTable({ students, onSelect, selected, examNameOf }: { students: 
   </section>
 }
 
-function StudentDetail({ student, examName }: { student: Student | null, examName?: string }) {
-  if (!student) return <section className="panel student-detail"><div className="p-4 text-center text-[10px] text-[#7186b3]">Selecciona un estudiante</div></section>
+function StudentDetail({ student, examName, reportHref }: { student: Student | null, examName?: string, reportHref: string }) {
+  if (!student) return <section className="panel student-detail"><div className="p-4 text-center text-[10px] text-[#64748b]">Selecciona un estudiante</div></section>
 
   const platforms = student.platforms?.length
     ? student.platforms
@@ -159,7 +168,7 @@ function StudentDetail({ student, examName }: { student: Student | null, examNam
       : []
   const maxCount = Math.max(1, ...platforms.map((p) => p.count))
 
-  return <section className="panel student-detail"><a className="back-link" href="#students">← &nbsp;Volver a estudiantes</a>
+  return <section className="panel student-detail">
     <div className="student-title"><div className="profile-avatar"><UserRound /></div>
       <div><h3>{student.display_name} <RiskBadge value={student.risk} /></h3>
         <span>Examen: {examName ?? '—'}</span>
@@ -168,7 +177,7 @@ function StudentDetail({ student, examName }: { student: Student | null, examNam
     </div>
     <div className="activity-box"><h4>Actividad detectada</h4>
       {platforms.length === 0 ? (
-        <div className="p-2 text-[8px] text-[#7186b3]">Sin actividad de IA.</div>
+        <div className="p-2 text-[8px] text-[#64748b]">Sin actividad de IA.</div>
       ) : platforms.map((p) => (
         <div className="activity-line" key={p.name}>
           <AiMark name={p.name} /><span>{p.name}</span>
@@ -180,78 +189,97 @@ function StudentDetail({ student, examName }: { student: Student | null, examNam
     <div className="summary"><h4>Resumen</h4>
       <div>
         <span><small>Actividad IA detectada</small><b>{student.captures_count} capturas</b></span>
+        <span><small>Sesiones</small><b>{student.sessions_count}</b></span>
+        <span><small>Incidentes abiertos</small><b>{student.open_incidents}</b></span>
         <span><small>Herramienta principal</small><b>{student.main_platform ?? '—'}</b></span>
-        <span><small>Dispositivo</small><b>{student.device_id ? student.device_id.slice(0, 8) : '—'}</b></span>
-        <RiskBadge value={student.risk} />
       </div>
     </div>
+    <Link className="btn-ghost report-link" to={reportHref}>Ver reporte de incidentes <ArrowUpRight size={13} /></Link>
   </section>
 }
 
 export default function Dashboard() {
+  const { selectedExam, selectedExamId } = useExamContext()
+  const { status: liveStatus, subscribeCaptures, lastCapture, advanceCursor } = useLiveContext()
+
   const [summary, setSummary] = useState<Summary | null>(null)
   const [students, setStudents] = useState<Student[]>([])
-  const [exams, setExams] = useState<Exam[]>([])
   const [selected, setSelected] = useState<Student | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
-  const examMap = useMemo(() => {
-    const map = new Map<number, string>()
-    exams.forEach((e) => map.set(e.id, e.name))
-    return map
-  }, [exams])
+  const examName = selectedExam?.name
 
-  const currentExam = exams[0]
-
-  const examNameOf = useCallback((s: Student): string | undefined => {
-    return s.exam != null ? examMap.get(s.exam) : currentExam?.name
-  }, [examMap, currentExam])
-
-  const refresh = useCallback(async () => {
-    setLoading(true)
-    setError(null)
-    try {
-      const [summaryData, studentsData, examsData] = await Promise.all([
-        apiGetSummary(),
-        apiGetStudents(),
-        apiGetExams(),
-      ])
-      setSummary(summaryData)
-      setStudents(studentsData)
-      setExams(examsData)
-      if (studentsData.length > 0) {
-        setSelected((prev) => prev && studentsData.some((s) => s.id === prev.id) ? prev : studentsData[0])
+  const refresh = useCallback(
+    async (targetExamId: number | null) => {
+      setError(null)
+      try {
+        const [summaryData, studentsData] = await Promise.all([
+          apiGetSummary(targetExamId),
+          apiGetStudents(targetExamId ?? undefined),
+        ])
+        setSummary(summaryData)
+        setStudents(studentsData)
+        // Lo que ya está pintado no debe repetirse al reconectar el SSE.
+        advanceCursor('capture', Math.max(0, ...summaryData.recent.map((capture) => capture.id)))
+        setSelected((prev) =>
+          prev && studentsData.some((s) => s.id === prev.id) ? prev : studentsData[0] ?? null,
+        )
+      } catch (caught) {
+        setError(caught instanceof Error ? caught.message : 'Error al cargar el dashboard')
+      } finally {
+        setLoading(false)
       }
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Error al cargar el dashboard')
-    } finally {
-      setLoading(false)
-    }
-  }, [])
+    },
+    [advanceCursor],
+  )
 
   useEffect(() => {
-    refresh()
-    const interval = setInterval(refresh, 30000)
-    return () => clearInterval(interval)
-  }, [refresh])
+    setLoading(true)
+    void refresh(selectedExamId)
+  }, [refresh, selectedExamId])
+
+  // Tiempo real: la actividad se pinta al instante y los agregados se
+  // recalculan con un debounce para no golpear la API en cada captura.
+  const timer = useRef<number | null>(null)
+  const scheduleRefresh = useCallback(() => {
+    if (timer.current !== null) window.clearTimeout(timer.current)
+    timer.current = window.setTimeout(() => void refresh(selectedExamId), AGGREGATE_DEBOUNCE_MS)
+  }, [refresh, selectedExamId])
+
+  useEffect(() => {
+    const unsubscribe = subscribeCaptures((capture) => {
+      setSummary((current) =>
+        current ? { ...current, recent: [capture, ...current.recent].slice(0, 20) } : current,
+      )
+      scheduleRefresh()
+    })
+    return unsubscribe
+  }, [subscribeCaptures, scheduleRefresh])
+
+  // Red de seguridad: si el SSE se cae, los datos siguen actualizándose.
+  useEffect(() => {
+    const interval = window.setInterval(() => void refresh(selectedExamId), FALLBACK_POLL_MS)
+    return () => window.clearInterval(interval)
+  }, [refresh, selectedExamId])
 
   return <div className="dashboard-page">
     <header className="page-header">
       <div><h1>Dashboard</h1><p>Monitorea el uso de inteligencia artificial durante los exámenes</p></div>
       <div className="header-actions">
-        <div className="exam-select"><CalendarDays size={15} /><span><small>Examen actual</small>{currentExam?.name ?? '—'}</span><ChevronDown size={13} /></div>
+        <div className="exam-select"><span><small>Examen actual</small>{selectedExam?.name ?? '—'}</span><ChevronDown size={13} /></div>
+        <div className={`live-pill live-${liveStatus}`}><span className="live-dot" />{liveStatus === 'live' ? 'En vivo' : liveStatus}</div>
         <div className="date">{new Date().toLocaleDateString('es-ES', { day: 'numeric', month: 'short', year: 'numeric' })}<strong>{new Date().toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })}</strong></div>
         <div className="avatar"><UserRound size={16} /></div>
       </div>
     </header>
 
     {loading && !summary ? (
-      <div className="py-16 text-center text-sm text-gray-400">Cargando datos…</div>
+      <div className="py-16 text-center text-sm text-slate-500">Cargando datos…</div>
     ) : error ? (
-      <div className="py-16 text-center text-sm text-red-400">{error}</div>
+      <div className="py-16 text-center text-sm text-red-500">{error}</div>
     ) : !summary ? (
-      <div className="py-16 text-center text-sm text-gray-400">Sin datos para mostrar</div>
+      <div className="py-16 text-center text-sm text-slate-500">Sin datos para mostrar</div>
     ) : (
       <>
         <Stats summary={summary} />
@@ -262,12 +290,22 @@ export default function Dashboard() {
               <UsageBreakdown platforms={summary.platforms} />
             </div>
           </div>
-          <RecentActivity captures={summary.recent.slice(0, 8)} />
+          <RecentActivity captures={summary.recent.slice(0, 8)} live={liveStatus === 'live'} />
         </div>
         <div className="dashboard-grid lower-grid">
-          <StudentTable students={students.slice(0, 8)} onSelect={setSelected} selected={selected} examNameOf={examNameOf} />
-          <StudentDetail student={selected} examName={examNameOf(selected!) ?? currentExam?.name} />
+          <StudentTable students={students.slice(0, 8)} onSelect={setSelected} selected={selected} examName={examName} />
+          <StudentDetail
+            student={selected}
+            examName={examName}
+            reportHref={selected ? `/students?student=${selected.id}` : '/students'}
+          />
         </div>
+        {lastCapture && (
+          <p className="live-footnote">
+            Última captura en vivo: {lastCapture.student_name} · {lastCapture.platform} ·{' '}
+            {relativeTime(lastCapture.timestamp)}
+          </p>
+        )}
       </>
     )}
   </div>

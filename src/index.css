@@ -1,7 +1,9 @@
+@import url('https://fonts.googleapis.com/css2?family=Host+Grotesk:ital,wght@0,300..800;1,300..800&display=swap');
 @import "tailwindcss";
 
 @layer base {
   body {
-    @apply bg-gray-950 text-gray-100 antialiased font-sans;
+    @apply bg-white text-slate-900 antialiased;
+    font-family: 'Host Grotesk', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
   }
 }
